@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+ <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231d4ed8'/><path d='M50 20 L70 55 A25 25 0 1 1 30 55 Z' fill='white'/></svg>">
+<link rel="shortcut icon" href="favicon.ico">
+<title>WVTR/OTR Calculator</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+
+<!-- Verified materials list -->
+<script src="verified.js"></script>
+
+<!-- Stylesheet -->
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- ================================================================
+     🔥 FIREBASE — must stay inline (type="module")
+     ================================================================ -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+  import { getFirestore, collection, addDoc, getDocs, getDoc,
+           query, orderBy, updateDoc, doc, increment }
+    from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+  import { initializeAppCheck, ReCaptchaV3Provider }
+    from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app-check.js";
+
+  window.fbGetDoc   = getDoc;
+  window.fbIncrement = increment;
+  window.fbUpdateDoc = updateDoc;
+  window.fbDoc      = doc;
+
+  const firebaseConfig = {
+    apiKey:            "AIzaSyA6qFSRGcknbBbjVzV4F3CoLkdBA_fqkvk",
+    authDomain:        "wvtr-community.firebaseapp.com",
+    projectId:         "wvtr-community",
+    storageBucket:     "wvtr-community.firebasestorage.app",
+    messagingSenderId: "317445771576",
+    appId:             "1:317445771576:web:62908e2b54fbbcb08ab1cd"
+  };
+
+  const app = initializeApp(firebaseConfig);
+
+  initializeAppCheck(app, {
+    provider: new ReCaptchaV3Provider('6LdbV_osAAAAAKcvWRUyaS94L8xVaVcKioxCI72i'),
+    isTokenAutoRefreshEnabled: true
+  });
+
+  const db  = getFirestore(app);
+
+  window.communityDB  = db;
+  window.fbAddDoc     = addDoc;
+  window.fbGetDocs    = getDocs;
+  window.fbCollection = collection;
+  window.fbQuery      = query;
+  window.fbOrderBy    = orderBy;
+  console.log("🔥 Firebase connesso!");
+
+  // ── Save material to community ──────────────────────────────────
+  window.saveToCommunity = async function(mat) {
+    try {
+      const payload = {
+        name:                  mat.name,
+        family:                mat.family              || "Other",
+        testMethodWVTR:        mat.testMethodWVTR      || "",
+        testMethodOTR:         mat.testMethodOTR       || "",
+        isMetallized:          mat.isMetallized        || false,
+        hygroscopicBetaWVTR:   mat.hygroscopicBetaWVTR || 0,
+        hygroscopicRefRHWVTR:  mat.hygroscopicRefRHWVTR|| 50,
+        hygroscopicBetaOTR:    mat.hygroscopicBetaOTR  || 0,
+        hygroscopicRefRHOTR:   mat.hygroscopicRefRHOTR || 50,
+        wvtrValues:            mat.wvtrValues          || [],
+        otrValues:             mat.otrValues           || [],
+        validConditions:       mat.validConditions     || [],
+        author:                mat.author              || "Community",
+        company:               mat.company             || "",
+        tdsLink:               mat.tdsLink             || "",
+        updatedAt:             new Date().toISOString()
+      };
+      let docRef;
+      if(mat.firebaseDocId) {
+        const ref = window.fbDoc(window.communityDB, "materials", mat.firebaseDocId);
+        await window.fbUpdateDoc(ref, payload);
+        docRef = { id: mat.firebaseDocId };
+      } else {
+        payload.createdAt = new Date().toISOString();
+        docRef = await window.fbAddDoc(window.fbCollection(window.communityDB, "materials"), payload);
+      }
+      return { success: true, id: docRef.id };
+    } catch(e) {
+      console.error("❌ Save error:", e);
+      return { success: false, error: e.message };
+    }
+  };
+
+  // ── Load materials from community ──────────────────────────────
+  window.loadFromCommunity = async function() {
+    try {
+      const q = window.fbQuery(
+        window.fbCollection(window.communityDB, "materials"),
+        window.fbOrderBy("createdAt", "desc")
+      );
+      const snapshot = await window.fbGetDocs(q);
+      const mats = [];
+      snapshot.forEach(d => {
+        const data = d.data();
+        if(data.testMethod && !data.testMethodWVTR && !data.testMethodOTR) {
+          data.testMethodWVTR = data.testMethod;
+          data.testMethodOTR  = data.testMethod;
+        }
+        mats.push({
+          id:               'fb_' + d.id,
+          firebaseDocId:    d.id,
+          ...data,
+          testMethod:       data.testMethod         || "",
+          author:           data.author             || "Community",
+          company:          data.company            || "",
+          tdsLink:          data.tdsLink            || "",
+          isMetallized:     data.isMetallized       || false,
+          isCommunity:      true,
+          usageCount:       data.usageCount         || 0,
+          lastUsageMonth:   data.lastUsageMonth     || '',
+          reliabilityVotes: data.reliabilityVotes   || { up: 0, down: 0 }
+        });
+      });
+      return mats;
+    } catch(e) {
+      console.error("❌ Load error:", e);
+      return [];
+    }
+  };
+
+  // ── User laminates sync ─────────────────────────────────────────
+  window.getOrCreateUserId = function() {
+    let uid = localStorage.getItem('wvtr_uid');
+    if(!uid) {
+      uid = 'anon_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+      localStorage.setItem('wvtr_uid', uid);
+    }
+    return uid;
+  };
+
+  function _cleanForFirestore(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+  window.saveLaminateToCloud = async function(lam) {
+    if(!window.communityDB) return;
+    try {
+      const uid     = window.getOrCreateUserId();
+      const payload = _cleanForFirestore(lam);
+      if(lam._cloudId) {
+        await window.fbUpdateDoc(
+          window.fbDoc(window.communityDB, 'users', uid, 'laminates', lam._cloudId), payload
+        );
+      } else {
+        const col = window.fbCollection(window.communityDB, 'users', uid, 'laminates');
+        const ref = await window.fbAddDoc(col, payload);
+        lam._cloudId = ref.id;
+        if(window.DB && window.DB.save) window.DB.save();
+      }
+    } catch(e) { console.warn('saveLaminateToCloud error:', e); }
+  };
+
+  window.deleteLaminateFromCloud = async function(cloudId) {
+    if(!window.communityDB || !cloudId) return;
+    try {
+      const uid = window.getOrCreateUserId();
+      const { deleteDoc } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js");
+      await deleteDoc(window.fbDoc(window.communityDB, 'users', uid, 'laminates', cloudId));
+    } catch(e) { console.warn('deleteLaminateFromCloud error:', e); }
+  };
+
+  window.loadLaminatesFromCloud = async function() {
+    if(!window.communityDB) return [];
+    try {
+      const uid  = window.getOrCreateUserId();
+      const col  = window.fbCollection(window.communityDB, 'users', uid, 'laminates');
+      const snap = await window.fbGetDocs(col);
+      const lams = [];
+      snap.forEach(d => { lams.push(Object.assign({}, d.data(), { _cloudId: d.id })); });
+      return lams;
+    } catch(e) { console.warn('loadLaminatesFromCloud error:', e); return []; }
+  };
+</script>
+
+<!-- ================================================================
+     APP SHELL
+     ================================================================ -->
+<div class="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="header-top" style="padding:0.9rem 1.5rem">
+
+      <!-- Logo -->
+      <div style="display:flex;align-items:center;gap:0.75rem">
+        <div style="width:28px;height:28px;background:rgba(255,255,255,0.12);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;color:#fff">
+            <path d="M12 2.69l5.66 5.66a8 8 0 11-11.31 0z"/>
+          </svg>
+        </div>
+        <div>
+          <div style="font-size:0.88rem;font-weight:700;color:#fff;letter-spacing:-0.01em;line-height:1.1">WVTR/OTR</div>
+          <div style="font-size:0.62rem;color:rgba(255,255,255,0.45);letter-spacing:0.06em;text-transform:uppercase;line-height:1">Calculator</div>
+        </div>
+      </div>
+
+      <!-- Mode Toggle -->
+      <div style="display:flex;align-items:center;gap:1rem">
+        <div style="display:flex;align-items:center;gap:0.4rem">
+          <span style="font-size:0.7rem;font-weight:700;color:#fff;letter-spacing:0.06em;text-transform:uppercase;opacity:0.9">Select the permeability type to calculate:</span>
+          <span style="position:relative;cursor:help"
+                title="">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 style="width:14px;height:14px;color:rgba(255,255,255,0.7)">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+          </span>
+        </div>
+        <div class="mode-toggle mode-toggle-highlighted">
+          <label>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2.69l5.66 5.66a8 8 0 11-11.31 0z"/>
+            </svg>
+            <input type="radio" name="mode" value="wvtr" checked onchange="setMode('wvtr')">
+            <span>WVTR</span>
+          </label>
+          <label>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <circle cx="12" cy="12" r="8" stroke-dasharray="4 3"/>
+            </svg>
+            <input type="radio" name="mode" value="otr" onchange="setMode('otr')">
+            <span>OTR</span>
+          </label>
+        </div>
+      </div>
+
+    </div><!-- /header-top -->
+
+    <!-- Nav tabs (populated by renderNav()) -->
+    <div class="nav-tabs" id="nav-tabs"></div>
+<div id="nav-subtabs" style="display:none"></div>
+  </header>
+
+  <!-- Main content (populated by renderContent()) -->
+  <main id="app-content"></main>
+
+</div><!-- /app -->
+
+<!-- Modal overlay -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <h2 id="modal-title"></h2>
+      <button class="btn btn-sm btn-outline" onclick="Modal.close()">✕</button>
+    </div>
+    <div class="modal-body"   id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<!-- ================================================================
+     SCRIPTS — load order matters: engine → app → charts → shelflife → render → materials
+     ================================================================ -->
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+     <script src="js/nav.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/shelflife.js"></script>
+<script src="js/render.js"></script>
+  <script src="js/home_patch.js"></script> 
+  <script src="js/company.js"></script>
+<script src="js/materials.js"></script>
+<script>initApp();</script>
+</body>
+</html>
+
